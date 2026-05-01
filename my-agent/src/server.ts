@@ -522,8 +522,36 @@ Your Care Coordination Team`;
   }
 }
 
+async function fetchRoster(): Promise<Response> {
+  const res = await fetch(
+    "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sql: `
+          SELECT id, first, last, ed_visits, chronic_condition_count,
+                 has_active_careplan, ed_inpatient_total_cost
+          FROM patient_summary
+          WHERE ed_visits >= 3
+          ORDER BY ed_visits DESC, has_active_careplan ASC
+          LIMIT 25
+        `
+      })
+    }
+  );
+  const data = await res.json();
+  return Response.json(data, {
+    headers: { "Cache-Control": "public, max-age=60" }
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    if (url.pathname === "/api/roster" && request.method === "GET") {
+      return fetchRoster();
+    }
     return (
       (await routeAgentRequest(request, env)) ||
       new Response("Not found", { status: 404 })
