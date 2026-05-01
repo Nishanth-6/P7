@@ -73,25 +73,40 @@ export class ChatAgent extends AIChatAgent<Env> {
       model: workersai("@cf/moonshotai/kimi-k2.6", {
         sessionAffinity: this.sessionAffinity
       }),
-      system: `You are a healthcare data analyst helping care coordinators at a value-based primary care practice.
+      system: `You are a Care Coordinator AI Assistant for a value-based primary care practice.
 
-You have access to a database of 117 synthetic patients. Use the queryDatabase tool to investigate patient data.
+YOUR PRIMARY JOB: Help coordinators identify patients at risk of preventable ER visits THIS WEEK and create actionable intervention plans.
 
-Start every investigation with:
-SELECT * FROM patient_summary ORDER BY ed_inpatient_total_cost DESC LIMIT 10
+WORKFLOW (follow these steps autonomously):
 
-Key tables:
-- patient_summary: start here — one row per patient, pre-computed costs and visit counts
-- encounters: filter by ENCOUNTERCLASS (emergency, inpatient, ambulatory, urgentcare, wellness)
-- conditions: active when STOP IS NULL — includes both clinical and SDOH conditions
-- observations: PRAPARE social screenings (housing, food, transport, stress)
-- claims_transactions: financial data — join on PATIENTID (not PATIENT)
-- medications: active when STOP IS NULL
+1. When asked to "find weekly risks" or "show this week's risks":
+   - Use findWeeklyRisk to identify patients likely to visit ER in next 7 days
+   - Present top 3-5 patients with risk scores and patterns
 
-Rules:
-- Never show raw JSON to users — always format results as a table or clear summary
-- Always include a LIMIT clause in SQL queries
-- Before recommending any action, summarize findings and ask the coordinator to confirm
+2. When coordinator asks about a specific patient:
+   - Use analyzePatient to get full clinical profile + care gaps
+   - Use getBarrierContext to understand social/logistical barriers
+   - Synthesize into clear summary: clinical status + gaps + barriers
+
+3. Before drafting intervention:
+   - ASK the coordinator a SPECIFIC question about local knowledge
+   - Example: "Patient has transportation barriers flagged. Does [patient name] have family who can drive them, or should I recommend medical transport?"
+   - WAIT for coordinator's answer
+
+4. After coordinator provides context:
+   - Use draftIntervention with the coordinator's input
+   - This requires approval - the coordinator will review and can modify
+
+CRITICAL RULES:
+- NEVER auto-execute interventions - always get coordinator approval
+- ASK targeted questions that only humans with local knowledge can answer
+- Format data as clear summaries, NOT raw JSON
+- Focus on ACTIONABLE gaps (missing appointments, no care plan) not just diagnoses
+- Incorporate BOTH clinical AND social factors in your analysis
+
+HUMAN-IN-THE-LOOP PATTERN:
+Your questions should change what you do next. Don't ask "Approve yes/no?"
+Ask "Option A or Option B?" where the answer determines the intervention content.
 
 ${getSchedulePrompt({ date: new Date() })}`,
       // Prune old tool calls to save tokens on long conversations
@@ -103,46 +118,273 @@ ${getSchedulePrompt({ date: new Date() })}`,
         // MCP tools from connected servers
         ...mcpTools,
 
-        // Server-side tool: runs automatically on the server
-        queryDatabase: tool({
+        // ===== HEALTHCARE AGENT TOOLS =====
+
+        // Tool 1: Find patients at risk of ER visit this week
+        findWeeklyRisk: tool({
           description:
-            "Execute a SQL SELECT query against the patient dataset. " +
-            "Use patient_summary as your starting point — it has one row per patient " +
-            "with pre-computed visit counts, costs, and care plan flags. " +
-            "Tables: patients, encounters, conditions, medications, " +
-            "observations, procedures, claims_transactions, careplans. " +
-            "IMPORTANT: claims_transactions joins on PATIENTID, not PATIENT.",
+            "Identify patients at highest risk of preventable ER visit in the next 7 days. " +
+            "Analyzes ER visit patterns to find patients with frequent, predictable ER usage. " +
+            "Returns top patients ranked by risk score with pattern analysis.",
           inputSchema: z.object({
-            sql: z.string().describe("A valid SQL SELECT statement. Always include a LIMIT clause.")
+            limit: z.number().default(5).describe("Number of high-risk patients to return")
           }),
-          execute: async ({ sql }) => {
+          execute: async ({ limit }) => {
+            // Query patients with frequent ED visits
             const res = await fetch(
               "https://uic-hackathon-data.christian-7f4.workers.dev/query",
               {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sql })
+                body: JSON.stringify({
+                  sql: `
+                    SELECT
+                      id,
+                      first,
+                      last,
+                      ed_visits,
+                      chronic_condition_count,
+                      has_active_careplan,
+                      ed_inpatient_total_cost
+                    FROM patient_summary
+                    WHERE ed_visits >= 3
+                    ORDER BY ed_visits DESC, has_active_careplan ASC
+                    LIMIT ${limit}
+                  `
+                })
               }
             );
-            return res.json() as object;
+            const data = await res.json() as any;
+
+            // Calculate simple risk scores (in production, this would be more sophisticated)
+            const patientsWithRisk = data.results?.map((p: any) => ({
+              ...p,
+              risk_score: (p.ed_visits * 10) +
+                         (p.chronic_condition_count * 5) +
+                         (p.has_active_careplan === 0 ? 25 : 0),
+              risk_level: p.ed_visits > 20 ? "CRITICAL" : p.ed_visits > 10 ? "HIGH" : "MODERATE"
+            })) || [];
+
+            return {
+              success: true,
+              count: patientsWithRisk.length,
+              patients: patientsWithRisk,
+              message: `Found ${patientsWithRisk.length} high-risk patients`
+            };
           }
         }),
 
-        getWeather: tool({
-          description: "Get the current weather for a city",
+        // Tool 2: Analyze specific patient's full profile
+        analyzePatient: tool({
+          description:
+            "Get comprehensive analysis of a specific patient including active conditions, " +
+            "medications, recent encounters, and care plan status. Use this after identifying " +
+            "a high-risk patient to understand their full clinical picture.",
           inputSchema: z.object({
-            city: z.string().describe("City name")
+            patientId: z.string().describe("Patient UUID"),
+            patientName: z.string().describe("Patient name for context")
           }),
-          execute: async ({ city }) => {
-            // Replace with a real weather API in production
-            const conditions = ["sunny", "cloudy", "rainy", "snowy"];
-            const temp = Math.floor(Math.random() * 30) + 5;
+          execute: async ({ patientId, patientName }) => {
+            // Get active conditions
+            const conditionsRes = await fetch(
+              "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sql: `
+                    SELECT DESCRIPTION, START
+                    FROM conditions
+                    WHERE PATIENT = '${patientId}' AND STOP IS NULL
+                    ORDER BY START DESC
+                    LIMIT 10
+                  `
+                })
+              }
+            );
+            const conditions = await conditionsRes.json() as any;
+
+            // Get recent encounters
+            const encountersRes = await fetch(
+              "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sql: `
+                    SELECT ENCOUNTERCLASS, DESCRIPTION, START, REASONDESCRIPTION
+                    FROM encounters
+                    WHERE PATIENT = '${patientId}'
+                    ORDER BY START DESC
+                    LIMIT 10
+                  `
+                })
+              }
+            );
+            const encounters = await encountersRes.json() as any;
+
+            // Get care plan status
+            const carePlanRes = await fetch(
+              "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sql: `
+                    SELECT DESCRIPTION, START, STOP
+                    FROM careplans
+                    WHERE PATIENT = '${patientId}'
+                    ORDER BY START DESC
+                    LIMIT 3
+                  `
+                })
+              }
+            );
+            const carePlans = await carePlanRes.json() as any;
+
+            const hasActivePlan = carePlans.results?.some((cp: any) => cp.STOP === null) || false;
+            const lastERVisit = encounters.results?.find((e: any) => e.ENCOUNTERCLASS === 'emergency');
+
             return {
-              city,
-              temperature: temp,
-              condition:
-                conditions[Math.floor(Math.random() * conditions.length)],
-              unit: "celsius"
+              patient: patientName,
+              patientId,
+              activeConditions: conditions.results || [],
+              recentEncounters: encounters.results || [],
+              carePlanStatus: {
+                hasActivePlan,
+                plans: carePlans.results || []
+              },
+              lastERVisit: lastERVisit || null,
+              gaps: {
+                noCarePlan: !hasActivePlan,
+                multipleERVisits: encounters.results?.filter((e: any) => e.ENCOUNTERCLASS === 'emergency').length > 3
+              }
+            };
+          }
+        }),
+
+        // Tool 3: Get social determinants and barriers
+        getBarrierContext: tool({
+          description:
+            "Retrieve social determinants of health (SDOH) data for a patient including " +
+            "housing, transportation, food security, and other barriers that may prevent " +
+            "them from accessing care. Use this to understand non-clinical factors.",
+          inputSchema: z.object({
+            patientId: z.string().describe("Patient UUID"),
+            patientName: z.string().describe("Patient name for context")
+          }),
+          execute: async ({ patientId, patientName }) => {
+            // Get SDOH conditions (flagged in conditions table)
+            const sdohRes = await fetch(
+              "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sql: `
+                    SELECT DESCRIPTION
+                    FROM conditions
+                    WHERE PATIENT = '${patientId}'
+                    AND STOP IS NULL
+                    AND (
+                      DESCRIPTION LIKE '%housing%'
+                      OR DESCRIPTION LIKE '%transport%'
+                      OR DESCRIPTION LIKE '%food%'
+                      OR DESCRIPTION LIKE '%employment%'
+                      OR DESCRIPTION LIKE '%stress%'
+                      OR DESCRIPTION LIKE '%social isolation%'
+                    )
+                  `
+                })
+              }
+            );
+            const sdohConditions = await sdohRes.json() as any;
+
+            // Get PRAPARE observations (social screening data)
+            const prapareRes = await fetch(
+              "https://uic-hackathon-data.christian-7f4.workers.dev/query",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sql: `
+                    SELECT DESCRIPTION, VALUE, DATE
+                    FROM observations
+                    WHERE PATIENT = '${patientId}'
+                    AND CODE IN (
+                      SELECT CODE FROM observations
+                      WHERE DESCRIPTION LIKE '%PRAPARE%'
+                      OR DESCRIPTION LIKE '%housing%'
+                      OR DESCRIPTION LIKE '%transport%'
+                      OR DESCRIPTION LIKE '%food%'
+                    )
+                    ORDER BY DATE DESC
+                    LIMIT 10
+                  `
+                })
+              }
+            );
+            const prapare = await prapareRes.json() as any;
+
+            const barriers = {
+              housing: (sdohConditions.results || []).some((c: any) => c.DESCRIPTION?.toLowerCase().includes('housing')),
+              transportation: (sdohConditions.results || []).some((c: any) => c.DESCRIPTION?.toLowerCase().includes('transport')),
+              food: (sdohConditions.results || []).some((c: any) => c.DESCRIPTION?.toLowerCase().includes('food')),
+              employment: (sdohConditions.results || []).some((c: any) => c.DESCRIPTION?.toLowerCase().includes('employment')),
+              socialIsolation: (sdohConditions.results || []).some((c: any) => c.DESCRIPTION?.toLowerCase().includes('social isolation'))
+            };
+
+            return {
+              patient: patientName,
+              patientId,
+              sdohConditions: sdohConditions.results || [],
+              prapareData: prapare.results || [],
+              identifiedBarriers: barriers,
+              hasBarriers: Object.values(barriers).some(b => b === true)
+            };
+          }
+        }),
+
+        // Tool 4: Draft intervention with approval required
+        draftIntervention: tool({
+          description:
+            "Draft a personalized outreach intervention plan for a high-risk patient. " +
+            "This tool REQUIRES coordinator approval before execution. " +
+            "Use barrier information and coordinator's local knowledge to personalize the plan.",
+          inputSchema: z.object({
+            patientName: z.string().describe("Patient name"),
+            patientId: z.string().describe("Patient UUID"),
+            riskFactors: z.array(z.string()).describe("List of identified risk factors"),
+            identifiedGaps: z.array(z.string()).describe("Care gaps (e.g., 'No active care plan', 'Missed appointments')"),
+            barriers: z.array(z.string()).describe("SDOH barriers (e.g., 'Transportation', 'Housing instability')"),
+            coordinatorInput: z.string().describe("Coordinator's local knowledge (e.g., 'Daughter drives Tuesdays')")
+          }),
+          needsApproval: true,  // This makes it require human approval
+          execute: async ({ patientName, patientId, riskFactors, identifiedGaps, barriers, coordinatorInput }) => {
+            // Generate intervention text incorporating coordinator's input
+            const intervention = {
+              patientName,
+              patientId,
+              priority: "HIGH",
+              actionItems: [
+                `📞 Call ${patientName} within 24 hours`,
+                ...identifiedGaps.map(gap => `✓ Address: ${gap}`),
+                ...barriers.length > 0 ? [`🚧 Consider barriers: ${barriers.join(', ')}`] : [],
+                `📝 Coordinator note: ${coordinatorInput}`
+              ],
+              suggestedApproach: coordinatorInput,
+              nextSteps: [
+                "Schedule care plan review appointment",
+                "Coordinate with relevant support services",
+                "Follow up in 7 days"
+              ],
+              estimatedImpact: "May prevent 1-3 ER visits in next 30 days"
+            };
+
+            return {
+              success: true,
+              intervention,
+              message: `Intervention plan drafted for ${patientName}. Awaiting coordinator approval.`
             };
           }
         }),
