@@ -32,8 +32,16 @@ from claude_agent_sdk import (
     tool,
     create_sdk_mcp_server,
     AssistantMessage,
+    UserMessage,
     TextBlock,
+    ToolUseBlock,
 )
+
+
+# ANSI colors for harness-vs-content visual distinction
+DIM = "\033[2m"
+CYAN = "\033[36m"
+RESET = "\033[0m"
 
 
 D1 = "https://uic-hackathon-data.christian-7f4.workers.dev/query"
@@ -72,9 +80,7 @@ async def list_high_cost_patients(args: dict[str, Any]) -> dict[str, Any]:
         "inpatient_visits, chronic_condition_count, has_active_careplan "
         f"FROM patient_summary ORDER BY ed_inpatient_total_cost DESC LIMIT {limit}"
     )
-    print(f"\n  → list_high_cost_patients(limit={limit})")
     result = requests.post(D1, json={"sql": sql}, timeout=10).json()
-    print(f"  ← {result.get('count', 0)} patients\n")
     return {"content": [{"type": "text", "text": str(result)}]}
 
 
@@ -90,9 +96,7 @@ async def get_patient_conditions(args: dict[str, Any]) -> dict[str, Any]:
         "SELECT DESCRIPTION FROM conditions "
         f"WHERE PATIENT = '{pid}' AND STOP IS NULL LIMIT 100"
     )
-    print(f"\n  → get_patient_conditions(patient_id={args['patient_id'][:8]}...)")
     result = requests.post(D1, json={"sql": sql}, timeout=10).json()
-    print(f"  ← {result.get('count', 0)} active conditions\n")
     return {"content": [{"type": "text", "text": str(result)}]}
 
 
@@ -148,8 +152,28 @@ async def main():
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
-                            if isinstance(block, TextBlock):
+                            # Tool decision: name + args. Filter out
+                            # Claude Code's internal ToolSearch helper.
+                            if isinstance(block, ToolUseBlock):
+                                if block.name.startswith("mcp__"):
+                                    short = block.name.split("__")[-1]
+                                    print(f"{CYAN}🔧 {short}({block.input}){RESET}", flush=True)
+                            elif isinstance(block, TextBlock):
                                 print(block.text, end="", flush=True)
+                    elif isinstance(message, UserMessage):
+                        # Tool results coming back to the model — show row count
+                        for block in message.content:
+                            content = getattr(block, "content", None)
+                            if isinstance(content, list):
+                                for item in content:
+                                    text = item.get("text", "") if isinstance(item, dict) else ""
+                                    if "'count':" in text:
+                                        # Extract count for a quick visual
+                                        try:
+                                            count = text.split("'count':")[1].split(",")[0].strip()
+                                            print(f"{DIM}   ← {count} rows{RESET}", flush=True)
+                                        except (IndexError, ValueError):
+                                            pass
                 print()
 
 

@@ -30,8 +30,16 @@ from claude_agent_sdk import (
     tool,
     create_sdk_mcp_server,
     AssistantMessage,
+    UserMessage,
     TextBlock,
+    ToolUseBlock,
 )
+
+
+# ANSI colors for harness-vs-content visual distinction
+DIM = "\033[2m"
+CYAN = "\033[36m"
+RESET = "\033[0m"
 
 
 D1 = "https://uic-hackathon-data.christian-7f4.workers.dev/query"
@@ -61,10 +69,7 @@ LIKE with LOWER() for fuzzy matching."""
     {"sql": str},
 )
 async def query_database(args: dict[str, Any]) -> dict[str, Any]:
-    sql = args["sql"]
-    print(f"\n  → SQL: {sql}")
-    result = requests.post(D1, json={"sql": sql}, timeout=10).json()
-    print(f"  ← {result.get('count', 0)} rows returned\n")
+    result = requests.post(D1, json={"sql": args["sql"]}, timeout=10).json()
     return {"content": [{"type": "text", "text": str(result)}]}
 
 
@@ -111,8 +116,25 @@ async def main():
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
-                            if isinstance(block, TextBlock):
+                            if isinstance(block, ToolUseBlock):
+                                if block.name.startswith("mcp__"):
+                                    short = block.name.split("__")[-1]
+                                    sql = block.input.get("sql", "") if isinstance(block.input, dict) else ""
+                                    print(f"{CYAN}🔧 {short}: {sql}{RESET}", flush=True)
+                            elif isinstance(block, TextBlock):
                                 print(block.text, end="", flush=True)
+                    elif isinstance(message, UserMessage):
+                        for block in message.content:
+                            content = getattr(block, "content", None)
+                            if isinstance(content, list):
+                                for item in content:
+                                    text = item.get("text", "") if isinstance(item, dict) else ""
+                                    if "'count':" in text:
+                                        try:
+                                            count = text.split("'count':")[1].split(",")[0].strip()
+                                            print(f"{DIM}   ← {count} rows{RESET}", flush=True)
+                                        except (IndexError, ValueError):
+                                            pass
                 print()
 
 
