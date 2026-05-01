@@ -36,7 +36,13 @@ import {
   XIcon,
   WrenchIcon,
   PaperclipIcon,
-  ImageIcon
+  ImageIcon,
+  EnvelopeSimpleIcon,
+  ChatTextIcon,
+  PencilSimpleIcon,
+  FloppyDiskIcon,
+  ArrowCounterClockwiseIcon,
+  WarningIcon
 } from "@phosphor-icons/react";
 
 // ── Attachment helpers ────────────────────────────────────────────────
@@ -93,23 +99,528 @@ function ThemeToggle() {
   );
 }
 
+// ── Outreach review (Approve / Modify / Reject) ───────────────────────
+
+type OutreachDecision = "pending" | "approved" | "rejected" | "modified";
+
+interface OutreachState {
+  decision: OutreachDecision;
+  emailSubject: string;
+  emailBody: string;
+  smsMessage: string;
+  rejectionReason?: string;
+}
+
+interface OutreachPlan {
+  pdfPreview?: {
+    title?: string;
+    date?: string;
+    patient?: string;
+    riskLevel?: string;
+    priority?: string;
+  };
+  emailDraft?: { to?: string; subject?: string; body?: string };
+  smsDraft?: { phone?: string; message?: string };
+  actionItems?: Array<string | null>;
+  estimatedImpact?: string;
+}
+
+function OutreachReviewCard({
+  toolCallId,
+  patient,
+  plan,
+  state,
+  onChange,
+  onApprove,
+  onReject,
+  isStreaming
+}: {
+  toolCallId: string;
+  patient: string;
+  plan: OutreachPlan;
+  state: OutreachState;
+  onChange: (next: OutreachState) => void;
+  onApprove: (modified: boolean) => void;
+  onReject: (reason: string) => void;
+  isStreaming: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [showRejectBox, setShowRejectBox] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const decisionLocked =
+    state.decision === "approved" || state.decision === "rejected";
+
+  const pdf = plan.pdfPreview ?? {};
+  const actionItems = (plan.actionItems ?? []).filter(
+    (a): a is string => typeof a === "string" && a.length > 0
+  );
+
+  const riskBadgeClass =
+    pdf.riskLevel === "CRITICAL"
+      ? "bg-red-500/15 text-red-500 ring-1 ring-red-500/30"
+      : pdf.riskLevel === "HIGH"
+        ? "bg-orange-500/15 text-orange-500 ring-1 ring-orange-500/30"
+        : "bg-yellow-500/15 text-yellow-600 ring-1 ring-yellow-500/30";
+
+  const decisionBadge =
+    state.decision === "approved" ? (
+      <Badge variant="primary" className="bg-green-500/20 text-green-500">
+        <CheckCircleIcon size={12} className="mr-1" weight="bold" />
+        Approved — queued to send
+      </Badge>
+    ) : state.decision === "rejected" ? (
+      <Badge variant="destructive">
+        <XCircleIcon size={12} className="mr-1" weight="bold" />
+        Rejected
+      </Badge>
+    ) : state.decision === "modified" ? (
+      <Badge variant="primary" className="bg-blue-500/20 text-blue-500">
+        <PencilSimpleIcon size={12} className="mr-1" weight="bold" />
+        Modified by coordinator
+      </Badge>
+    ) : (
+      <Badge variant="secondary">
+        <WarningIcon size={12} className="mr-1" weight="bold" />
+        Awaiting review
+      </Badge>
+    );
+
+  return (
+    <div className="flex justify-start">
+      <Surface
+        className="max-w-[85%] w-full px-4 py-4 rounded-xl ring-2 ring-kumo-brand/30 bg-gradient-to-br from-kumo-base to-kumo-elevated space-y-4"
+        data-tool-call-id={toolCallId}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">✉️</span>
+            <div>
+              <Text size="sm" bold DANGEROUS_className="text-kumo-default">
+                Outreach Generator Agent
+              </Text>
+              <Text size="xs" variant="secondary">
+                Personalized intervention for {patient}
+              </Text>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            {pdf.riskLevel && (
+              <span
+                className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded ${riskBadgeClass}`}
+              >
+                {pdf.riskLevel}
+              </span>
+            )}
+            {decisionBadge}
+          </div>
+        </div>
+
+        {/* Priority banner */}
+        {pdf.priority && (
+          <div className="px-3 py-2 rounded-lg bg-kumo-control border border-kumo-line">
+            <Text size="xs" variant="secondary" bold>
+              Priority
+            </Text>
+            <Text size="sm" DANGEROUS_className="text-kumo-default">
+              {pdf.priority}
+            </Text>
+          </div>
+        )}
+
+        {/* Email draft */}
+        <div className="rounded-lg border border-kumo-line overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 bg-kumo-control border-b border-kumo-line">
+            <EnvelopeSimpleIcon size={14} className="text-kumo-brand" />
+            <Text size="xs" bold DANGEROUS_className="text-kumo-default">
+              Email draft
+            </Text>
+            {plan.emailDraft?.to && (
+              <Text size="xs" variant="secondary" DANGEROUS_className="ml-auto font-mono">
+                to: {plan.emailDraft.to}
+              </Text>
+            )}
+          </div>
+          <div className="p-3 space-y-2">
+            <div>
+              <Text size="xs" variant="secondary" bold>
+                Subject
+              </Text>
+              {editing ? (
+                <input
+                  type="text"
+                  value={state.emailSubject}
+                  onChange={(e) =>
+                    onChange({ ...state, emailSubject: e.target.value })
+                  }
+                  className="w-full mt-1 px-2 py-1 text-sm rounded border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent"
+                />
+              ) : (
+                <Text size="sm" DANGEROUS_className="text-kumo-default mt-0.5">
+                  {state.emailSubject}
+                </Text>
+              )}
+            </div>
+            <div>
+              <Text size="xs" variant="secondary" bold>
+                Body
+              </Text>
+              {editing ? (
+                <textarea
+                  value={state.emailBody}
+                  onChange={(e) =>
+                    onChange({ ...state, emailBody: e.target.value })
+                  }
+                  rows={Math.min(
+                    16,
+                    Math.max(6, state.emailBody.split("\n").length + 1)
+                  )}
+                  className="w-full mt-1 px-2 py-1.5 text-sm rounded border border-kumo-line bg-kumo-base text-kumo-default font-mono focus:outline-none focus:ring-1 focus:ring-kumo-accent resize-y"
+                />
+              ) : (
+                <pre className="mt-0.5 px-2 py-1.5 text-xs whitespace-pre-wrap font-sans rounded bg-kumo-control text-kumo-default leading-relaxed">
+                  {state.emailBody}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* SMS draft */}
+        <div className="rounded-lg border border-kumo-line overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 bg-kumo-control border-b border-kumo-line">
+            <ChatTextIcon size={14} className="text-kumo-brand" />
+            <Text size="xs" bold DANGEROUS_className="text-kumo-default">
+              SMS draft
+            </Text>
+            {plan.smsDraft?.phone && (
+              <Text size="xs" variant="secondary" DANGEROUS_className="ml-auto font-mono">
+                {plan.smsDraft.phone}
+              </Text>
+            )}
+          </div>
+          <div className="p-3">
+            {editing ? (
+              <textarea
+                value={state.smsMessage}
+                onChange={(e) =>
+                  onChange({ ...state, smsMessage: e.target.value })
+                }
+                rows={3}
+                className="w-full px-2 py-1.5 text-sm rounded border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent resize-y"
+              />
+            ) : (
+              <Text size="sm" DANGEROUS_className="text-kumo-default whitespace-pre-wrap">
+                {state.smsMessage}
+              </Text>
+            )}
+          </div>
+        </div>
+
+        {/* Action items + impact */}
+        {(actionItems.length > 0 || plan.estimatedImpact) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {actionItems.length > 0 && (
+              <div className="rounded-lg border border-kumo-line p-3">
+                <Text size="xs" variant="secondary" bold>
+                  Action items
+                </Text>
+                <ul className="mt-1 space-y-0.5">
+                  {actionItems.map((item, idx) => (
+                    <li key={idx} className="text-xs text-kumo-default">
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {plan.estimatedImpact && (
+              <div className="rounded-lg border border-kumo-line p-3">
+                <Text size="xs" variant="secondary" bold>
+                  Estimated impact
+                </Text>
+                <Text size="sm" DANGEROUS_className="text-kumo-default mt-0.5">
+                  {plan.estimatedImpact}
+                </Text>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Rejection reason (when rejected) */}
+        {state.decision === "rejected" && state.rejectionReason && (
+          <div className="px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20">
+            <Text size="xs" variant="secondary" bold>
+              Rejection reason
+            </Text>
+            <Text size="sm" DANGEROUS_className="text-kumo-default">
+              {state.rejectionReason}
+            </Text>
+          </div>
+        )}
+
+        {/* Reject feedback box */}
+        {showRejectBox && !decisionLocked && (
+          <div className="px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20 space-y-2">
+            <Text size="xs" variant="secondary" bold>
+              Why are you rejecting? The agent will use this to regenerate.
+            </Text>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="e.g. Tone is too clinical, patient prefers SMS over email, timing won't work..."
+              rows={2}
+              className="w-full px-2 py-1.5 text-sm rounded border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent resize-y"
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!rejectReason.trim() || isStreaming}
+                icon={<XCircleIcon size={14} />}
+                onClick={() => {
+                  onReject(rejectReason.trim());
+                  setShowRejectBox(false);
+                }}
+              >
+                Confirm reject
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowRejectBox(false);
+                  setRejectReason("");
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Action buttons */}
+        {!decisionLocked && !showRejectBox && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {editing ? (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<FloppyDiskIcon size={14} />}
+                  onClick={() => {
+                    onChange({ ...state, decision: "modified" });
+                    setEditing(false);
+                  }}
+                >
+                  Save changes
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<ArrowCounterClockwiseIcon size={14} />}
+                  onClick={() => {
+                    onChange({
+                      ...state,
+                      emailSubject: plan.emailDraft?.subject ?? "",
+                      emailBody: plan.emailDraft?.body ?? "",
+                      smsMessage: plan.smsDraft?.message ?? "",
+                      decision: "pending"
+                    });
+                    setEditing(false);
+                  }}
+                >
+                  Discard edits
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={isStreaming}
+                  icon={<CheckCircleIcon size={14} />}
+                  onClick={() =>
+                    onApprove(state.decision === "modified")
+                  }
+                >
+                  Approve & queue to send
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<PencilSimpleIcon size={14} />}
+                  onClick={() => setEditing(true)}
+                >
+                  Modify
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isStreaming}
+                  icon={<XCircleIcon size={14} />}
+                  onClick={() => setShowRejectBox(true)}
+                >
+                  Reject
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+      </Surface>
+    </div>
+  );
+}
+
 // ── Tool rendering ────────────────────────────────────────────────────
 
 function ToolPartView({
   part,
-  addToolApprovalResponse
+  addToolApprovalResponse,
+  outreachState,
+  setOutreachState,
+  onOutreachDecision,
+  isStreaming
 }: {
   part: UIMessage["parts"][number];
   addToolApprovalResponse: (response: {
     id: string;
     approved: boolean;
   }) => void;
+  outreachState: Record<string, OutreachState>;
+  setOutreachState: (id: string, next: OutreachState) => void;
+  onOutreachDecision: (
+    decision: "approved" | "rejected",
+    args: {
+      toolCallId: string;
+      patient: string;
+      modified: boolean;
+      emailSubject: string;
+      emailBody: string;
+      smsMessage: string;
+      rejectionReason?: string;
+    }
+  ) => void;
+  isStreaming: boolean;
 }) {
   if (!isToolUIPart(part)) return null;
   const toolName = getToolName(part);
 
   // Completed
   if (part.state === "output-available") {
+    const output = part.output as any;
+    const isAgentOutput = output?.agent && output?.status;
+
+    // Outreach plan review card (Approve / Modify / Reject)
+    if (
+      toolName === "generateOutreachPlan" &&
+      output?.outreachPlan?.emailDraft
+    ) {
+      const toolCallId = part.toolCallId;
+      const plan = output.outreachPlan as OutreachPlan;
+      const patient = output.patient ?? "patient";
+      const state: OutreachState = outreachState[toolCallId] ?? {
+        decision: "pending",
+        emailSubject: plan.emailDraft?.subject ?? "",
+        emailBody: plan.emailDraft?.body ?? "",
+        smsMessage: plan.smsDraft?.message ?? ""
+      };
+      return (
+        <OutreachReviewCard
+          toolCallId={toolCallId}
+          patient={patient}
+          plan={plan}
+          state={state}
+          isStreaming={isStreaming}
+          onChange={(next) => setOutreachState(toolCallId, next)}
+          onApprove={(modified) => {
+            const next: OutreachState = {
+              ...state,
+              decision: "approved"
+            };
+            setOutreachState(toolCallId, next);
+            onOutreachDecision("approved", {
+              toolCallId,
+              patient,
+              modified: modified || state.decision === "modified",
+              emailSubject: state.emailSubject,
+              emailBody: state.emailBody,
+              smsMessage: state.smsMessage
+            });
+          }}
+          onReject={(reason) => {
+            const next: OutreachState = {
+              ...state,
+              decision: "rejected",
+              rejectionReason: reason
+            };
+            setOutreachState(toolCallId, next);
+            onOutreachDecision("rejected", {
+              toolCallId,
+              patient,
+              modified: false,
+              emailSubject: state.emailSubject,
+              emailBody: state.emailBody,
+              smsMessage: state.smsMessage,
+              rejectionReason: reason
+            });
+          }}
+        />
+      );
+    }
+
+    // Enhanced UI for Sub-Agent outputs
+    if (isAgentOutput) {
+      const agentEmoji = output.agent?.includes("Risk") ? "🎯" :
+                        output.agent?.includes("Clinical") ? "📋" :
+                        output.agent?.includes("Barrier") ? "🚧" :
+                        output.agent?.includes("Outreach") ? "✉️" : "⚙️";
+
+      const statusColor = output.status === "completed" ? "text-kumo-success" :
+                         output.status === "awaiting_approval" ? "text-kumo-warning" :
+                         "text-kumo-brand";
+
+      return (
+        <div className="flex justify-start">
+          <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-brand/20 bg-gradient-to-br from-kumo-base to-kumo-elevated">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-lg">{agentEmoji}</span>
+              <Text size="sm" bold DANGEROUS_className="text-kumo-default">
+                {output.agent}
+              </Text>
+              <Badge variant="primary" className={statusColor}>
+                {output.status === "completed" ? "✓ Completed" :
+                 output.status === "awaiting_approval" ? "⏳ Awaiting Approval" :
+                 output.status}
+              </Badge>
+            </div>
+            {output.summary && (
+              <div className="mb-2">
+                <Text size="sm" variant="secondary">{output.summary}</Text>
+              </div>
+            )}
+            {output.message && (
+              <div className="mb-2">
+                <Text size="sm">{output.message}</Text>
+              </div>
+            )}
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-kumo-subtle hover:text-kumo-default">
+                View detailed output
+              </summary>
+              <div className="font-mono mt-2 p-2 rounded bg-kumo-control">
+                <Text size="xs" variant="secondary">
+                  {JSON.stringify(output, null, 2)}
+                </Text>
+              </div>
+            </details>
+          </Surface>
+        </div>
+      );
+    }
+
+    // Default UI for non-agent tools
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
@@ -201,6 +712,44 @@ function ToolPartView({
 
   // Executing
   if (part.state === "input-available" || part.state === "input-streaming") {
+    // Enhanced UI for sub-agent execution
+    const isSubAgent = toolName.includes("rank") || toolName.includes("analyze") ||
+                      toolName.includes("detect") || toolName.includes("generate");
+
+    const agentName = toolName.includes("rank") ? "🎯 Risk Ranking Agent" :
+                     toolName.includes("analyze") ? "📋 Clinical Profile Agent" :
+                     toolName.includes("detect") ? "🚧 Barrier Detection Agent" :
+                     toolName.includes("generate") ? "✉️ Outreach Generator Agent" :
+                     toolName;
+
+    const agentAction = toolName.includes("rank") ? "Calculating risk scores..." :
+                       toolName.includes("analyze") ? "Pulling medical records..." :
+                       toolName.includes("detect") ? "Analyzing SDOH barriers..." :
+                       toolName.includes("generate") ? "Creating outreach plan..." :
+                       `Running ${toolName}...`;
+
+    if (isSubAgent) {
+      return (
+        <div className="flex justify-start">
+          <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-brand bg-gradient-to-r from-kumo-brand/5 to-kumo-brand/10 animate-pulse">
+            <div className="flex items-center gap-2">
+              <GearIcon size={16} className="text-kumo-brand animate-spin" />
+              <div>
+                <Text size="sm" bold DANGEROUS_className="text-kumo-default">
+                  {agentName}
+                </Text>
+                <Text size="xs" variant="secondary" DANGEROUS_className="mt-0.5">
+                  {agentAction}
+                </Text>
+              </div>
+              <Badge variant="primary" className="ml-auto">Running</Badge>
+            </div>
+          </Surface>
+        </div>
+      );
+    }
+
+    // Default for non-agent tools
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
@@ -226,6 +775,9 @@ function Chat() {
   const [showDebug, setShowDebug] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [outreachState, setOutreachStateMap] = useState<
+    Record<string, OutreachState>
+  >({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -338,6 +890,64 @@ function Chat() {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  const setOutreachState = useCallback(
+    (id: string, next: OutreachState) => {
+      setOutreachStateMap((prev) => {
+        const existing = prev[id];
+        if (
+          existing &&
+          existing.decision === next.decision &&
+          existing.emailSubject === next.emailSubject &&
+          existing.emailBody === next.emailBody &&
+          existing.smsMessage === next.smsMessage &&
+          existing.rejectionReason === next.rejectionReason
+        ) {
+          return prev;
+        }
+        return { ...prev, [id]: next };
+      });
+    },
+    []
+  );
+
+  const handleOutreachDecision = useCallback(
+    (
+      decision: "approved" | "rejected",
+      args: {
+        toolCallId: string;
+        patient: string;
+        modified: boolean;
+        emailSubject: string;
+        emailBody: string;
+        smsMessage: string;
+        rejectionReason?: string;
+      }
+    ) => {
+      let text: string;
+      if (decision === "approved") {
+        const verb = args.modified
+          ? "approved (with my edits)"
+          : "approved as-is";
+        text =
+          `Coordinator decision for ${args.patient}: outreach plan ${verb}. ` +
+          `Mark this intervention as queued to send and let me know what to tackle next.`;
+        if (args.modified) {
+          text +=
+            `\n\nFinal email subject: ${args.emailSubject}` +
+            `\n\nFinal email body:\n${args.emailBody}` +
+            `\n\nFinal SMS:\n${args.smsMessage}`;
+        }
+      } else {
+        text =
+          `Coordinator decision for ${args.patient}: outreach plan rejected. ` +
+          `Reason: ${args.rejectionReason ?? "(no reason given)"}. ` +
+          `Please regenerate generateOutreachPlan with adjustments that address this concern.`;
+      }
+      sendMessage({ role: "user", parts: [{ type: "text", text }] });
+    },
+    [sendMessage]
+  );
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -707,6 +1317,10 @@ function Chat() {
                     key={part.toolCallId}
                     part={part}
                     addToolApprovalResponse={addToolApprovalResponse}
+                    outreachState={outreachState}
+                    setOutreachState={setOutreachState}
+                    onOutreachDecision={handleOutreachDecision}
+                    isStreaming={isStreaming}
                   />
                 ))}
 

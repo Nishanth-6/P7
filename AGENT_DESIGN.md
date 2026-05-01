@@ -161,86 +161,107 @@ SELECT * FROM patients WHERE ed_visits > 5
 
 ## 🛠️ Technical Implementation
 
-### System Architecture
+### System Architecture: Multi-Agent System
 
-**4 Tools (Multi-step Agent):**
+**BREAKTHROUGH FEATURE: 4 Specialized Sub-Agents Running in Parallel**
 
-#### Tool 1: `findWeeklyRisk` (CODE - deterministic)
+The system uses a **main coordinator agent** that orchestrates **4 specialized sub-agents**, each visible in the UI with real-time status updates.
+
+#### Main Coordinator Agent
+- Orchestrates sub-agent execution
+- Decides which agents to call and when
+- Manages parallel execution for speed
+- Synthesizes results from multiple agents
+
+#### Sub-Agent 1: 🎯 Risk Ranking Agent (`rankWeeklyRisks`)
 ```typescript
-Purpose: Find patients likely to visit ER in next 7 days
-Input: limit (default 5)
-Output: Ranked list with risk scores
-Logic:
-  - Query patients with ≥3 ED visits
-  - Calculate risk score:
-    (ed_visits × 10) + (conditions × 5) + (no_careplan ? 25 : 0)
-  - Rank by score
-```
-
-#### Tool 2: `analyzePatient` (CODE - multi-query)
-```typescript
-Purpose: Get full clinical profile + identify gaps
-Input: patientId, patientName
-Queries:
-  - Active conditions (WHERE STOP IS NULL)
-  - Recent encounters (last 10)
-  - Care plan status
+Type: Deterministic CODE agent
+Purpose: Predictive risk scoring for ER visits
+Visibility: User sees "Risk Ranking Agent - Running..." in UI
+Execution: Runs autonomously when user asks "show weekly risks"
 Output:
-  - Conditions list
-  - Last ER visit date
-  - Gaps: {noCarePlan: bool, multipleERVisits: bool}
+  - agent: "Risk Ranking Agent"
+  - status: "completed"
+  - topRisks: [{patient, risk_score, risk_level, predicted_er_window}]
+  - summary: "Ranked 5 patients. Top: Lindsay Brekke (Risk: 515)"
+Algorithm:
+  risk_score = (ed_visits × 10) + (conditions × 5) + (no_careplan ? 25 : 0)
 ```
 
-#### Tool 3: `getBarrierContext` (CODE - SDOH analysis)
+#### Sub-Agent 2: 📋 Clinical Profile Agent (`analyzePatientProfile`)
 ```typescript
+Type: Data retrieval + gap analysis agent
+Purpose: Pull comprehensive medical records and identify care gaps
+Visibility: User sees "Clinical Profile Agent - Running..." in UI
+Execution: Runs IN PARALLEL with Barrier Detection Agent
+Output:
+  - agent: "Clinical Profile Agent"
+  - status: "completed"
+  - clinicalSummary: {activeConditions, totalERVisits, lastERVisit, hasActivePlan}
+  - identifiedGaps: ["No active care plan", "44 ER visits (preventable pattern)"]
+  - rawData: {conditions, encounters, carePlans}
+```
+
+#### Sub-Agent 3: 🚧 Barrier Detection Agent (`detectBarriers`)
+```typescript
+Type: SDOH analysis agent
 Purpose: Identify social barriers preventing care access
-Input: patientId, patientName
-Queries:
-  - SDOH conditions (housing, transport, food, employment)
-  - PRAPARE observations (social screening data)
+Visibility: User sees "Barrier Detection Agent - Running..." in UI
+Execution: Runs IN PARALLEL with Clinical Profile Agent
 Output:
-  - identifiedBarriers: {housing, transportation, food, ...}
-  - hasBarriers: boolean
+  - agent: "Barrier Detection Agent"
+  - status: "completed"
+  - activeBarriers: ["Transportation", "Housing"]
+  - criticalBarrier: "Transportation"
+  - recommendedActions: ["Address Transportation barrier before scheduling"]
+  - rawData: {sdohConditions, prapareScreening}
 ```
 
-#### Tool 4: `draftIntervention` (LLM + APPROVAL)
+#### Sub-Agent 4: ✉️ Outreach Generator Agent (`generateOutreachPlan`)
 ```typescript
-Purpose: Generate personalized intervention plan
-Input:
-  - patientName
-  - riskFactors[]
-  - identifiedGaps[]
-  - barriers[]
-  - coordinatorInput ← CRITICAL: Human's local knowledge
-Settings:
-  needsApproval: true  // Requires human approval
+Type: Content generation + approval agent
+Purpose: Create personalized outreach materials with PDF/email/SMS
+Visibility: User sees "Outreach Generator Agent - Awaiting Approval..." in UI
+Execution: Runs AFTER coordinator answers targeted question
+Settings: needsApproval: true (shows Approve/Reject buttons)
 Output:
-  - Action items
-  - Suggested approach (using coordinator input)
-  - Next steps
-  - Estimated impact
+  - agent: "Outreach Generator Agent"
+  - status: "awaiting_approval"
+  - outreachPlan: {
+      pdfPreview: {title, date, patient, riskLevel, priority}
+      emailDraft: {to, subject, body}  ← Personalized with coordinator input
+      smsDraft: {phone, message}       ← Short version
+      actionItems: ["📞 Call patient", "✓ Address gaps", "🚧 Barriers"]
+      estimatedImpact: "Prevent 2-4 ER visits (~$5K savings)"
+    }
 ```
 
 ### System Prompt (Key Elements)
 
 ```
-You are a Care Coordinator AI Assistant.
+You are the MAIN COORDINATOR for a Multi-Agent Care System.
 
 PRIMARY JOB: Identify patients at risk of preventable ER visits THIS WEEK.
 
 WORKFLOW (autonomous):
-1. Use findWeeklyRisk to identify top 3-5 patients
-2. Use analyzePatient to get clinical profile + gaps
-3. Use getBarrierContext to understand barriers
-4. ASK coordinator specific question about local knowledge
-   Example: "Does patient have family support or need medical transport?"
-5. WAIT for coordinator's answer
-6. Use draftIntervention with coordinator's input
-7. Requires approval before execution
+When coordinator asks about a specific patient by NAME:
+1. FIRST: Call searchPatient to get patient UUID
+2. IMMEDIATELY: Call BOTH analyzePatientProfile AND detectBarriers IN PARALLEL
+3. Wait for both to complete
+4. Synthesize results into clear summary
+5. ⚡ MANDATORY STEP - DO NOT SKIP: After presenting the analysis, you MUST IMMEDIATELY ask a targeted binary question.
+   - DO NOT WAIT for permission. DO NOT say "would you like me to..."
+   - Example: "Lindsay has transportation barriers. Does she have family who can drive her to appointments (daughter available Tuesdays), or should I arrange medical transport instead?"
+   - The question MUST be a binary choice (A or B) that will personalize the outreach
+6. ⚡ MANDATORY STEP - DO NOT SKIP: After coordinator answers, IMMEDIATELY call generateOutreachPlan
+   - Do NOT ask permission. Just call the tool with all required parameters.
+   - This automatically creates PDF preview + email draft + SMS option
+   - Approve/Reject buttons appear automatically (needsApproval: true)
 
-CRITICAL: ASK questions that only humans know.
-NOT "Approve yes/no?"
-BUT "Option A or Option B?" where answer changes the intervention.
+CRITICAL RULES - WORKFLOW MUST COMPLETE:
+- After showing barrier analysis, you MUST ask the binary question immediately (step 5 is NOT optional)
+- After receiving coordinator's answer, you MUST call generateOutreachPlan immediately (step 6 is NOT optional)
+- The workflow is incomplete unless coordinator sees the email/SMS drafts with Approve/Reject buttons
 ```
 
 ---
@@ -258,16 +279,20 @@ BUT "Option A or Option B?" where answer changes the intervention.
 **You type:** "Show me this week's risks"
 
 **Agent autonomously:**
-1. Calls `findWeeklyRisk`
-2. Returns: "Found 5 high-risk patients. Top: Lindsay Brekke (Risk: 65/100)"
-3. You ask: "Tell me about Lindsay"
-4. Calls `analyzePatient` - shows 44 ER visits, chronic migraine, no care plan
-5. Calls `getBarrierContext` - finds transportation barrier
-6. **HITL Moment:** Agent asks: "Lindsay has transportation barriers. Does she have family who can drive her, or should I recommend medical transport?"
-7. You answer: "Daughter drives Tuesdays"
-8. Calls `draftIntervention` with coordinatorInput="Daughter drives Tuesdays"
-9. Shows intervention: "Call today. Book Tuesday 2pm appointment..."
-10. You approve
+1. Calls `rankWeeklyRisks`
+2. Returns: "Found 5 high-risk patients. Top: Lindsay Brekke (Risk: 515/1000)"
+3. You type: "Tell me about Lindsay Brekke"
+4. Agent calls `searchPatient` - finds UUID automatically
+5. Agent calls BOTH `analyzePatientProfile` AND `detectBarriers` IN PARALLEL
+6. Shows beautiful agent cards: 📋 Clinical Profile Agent + 🚧 Barrier Detection Agent running simultaneously
+7. Presents synthesis: 44 ER visits, chronic migraine, no care plan, transportation barrier
+8. **MANDATORY HITL Moment:** Agent IMMEDIATELY asks: "Lindsay has transportation barriers. Does she have family who can drive her to appointments (daughter mentioned as available Tuesdays), or should I arrange medical transport instead?"
+9. You answer: "Daughter drives Tuesdays"
+10. Agent IMMEDIATELY calls `generateOutreachPlan` with coordinatorInput="Daughter drives Tuesdays"
+11. Shows ✉️ Outreach Generator Agent card with PDF preview, email draft, SMS option
+12. Displays **Approve/Reject buttons** (needsApproval: true)
+13. You click **Approve**
+14. System marks intervention as ready to send
 
 ### Impact (1 minute)
 **You say:**
