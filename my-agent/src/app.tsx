@@ -7,7 +7,6 @@ import type { ChatAgent } from "./server";
 import {
   Badge,
   Button,
-  Empty,
   InputArea,
   Surface,
   Switch,
@@ -1249,34 +1248,56 @@ function Chat({
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
           {messages.length === 0 && (
-            <Empty
-              icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
-              contents={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {[
-                    "Show me this week's risks",
-                    "Tell me about Lindsay Brekke",
-                    "Who needs intervention today?"
-                  ].map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      disabled={isStreaming}
-                      onClick={() => {
-                        sendMessage({
-                          role: "user",
-                          parts: [{ type: "text", text: prompt }]
-                        });
-                      }}
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
+            <div className="max-w-md mx-auto pt-8 text-center space-y-5">
+              <div className="text-4xl">👋</div>
+              <div className="space-y-1.5">
+                <Text variant="heading3">Welcome, Coordinator.</Text>
+                <Text size="sm" variant="secondary">
+                  Click any patient on the left to launch the multi-agent
+                  investigation, or jump straight in:
+                </Text>
+              </div>
+              <div className="flex flex-col gap-2 max-w-sm mx-auto">
+                {[
+                  {
+                    title: "Show me this week's risks",
+                    sub: "Run the Risk Ranking Agent across the roster"
+                  },
+                  {
+                    title: "Tell me about Lindsay Brekke",
+                    sub: "Deep-dive on the top patient (parallel sub-agents)"
+                  },
+                  {
+                    title: "Who has the worst care gap today?",
+                    sub: "Find patients with high ED + no active plan"
+                  }
+                ].map((p) => (
+                  <button
+                    key={p.title}
+                    type="button"
+                    disabled={isStreaming}
+                    onClick={() =>
+                      sendMessage({
+                        role: "user",
+                        parts: [{ type: "text", text: p.title }]
+                      })
+                    }
+                    className="w-full text-left px-3 py-2 rounded-lg border border-kumo-line bg-kumo-base hover:bg-kumo-elevated hover:border-kumo-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="text-sm font-medium text-kumo-default">
+                      {p.title}
+                    </div>
+                    <div className="text-xs text-kumo-subtle mt-0.5">
+                      {p.sub}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <Text size="xs" variant="secondary">
+                Each investigation runs four specialized sub-agents.
+                Approve, modify, or reject the outreach plan when ready.
+              </Text>
+            </div>
           )}
 
           {messages.map((message: UIMessage, index: number) => {
@@ -1631,8 +1652,10 @@ function PatientCard({
             {patient.fullName}
           </div>
           <div className="text-xs text-kumo-subtle mt-0.5">
-            {patient.ed_visits} ED visits · {patient.chronic_condition_count}{" "}
-            conditions
+            {patient.ed_visits} ED · {patient.chronic_condition_count} cond
+            {patient.ed_inpatient_total_cost > 0 && (
+              <> · {formatMoney(patient.ed_inpatient_total_cost)}</>
+            )}
           </div>
           {patient.has_active_careplan === 0 && (
             <div className="flex items-center gap-1 text-[11px] text-orange-500 mt-1">
@@ -1656,38 +1679,38 @@ function PatientCard({
   );
 }
 
+type SortOption = "risk" | "ed" | "cost" | "name";
+
+const SORT_LABELS: Record<SortOption, string> = {
+  risk: "Risk score",
+  ed: "ED visits",
+  cost: "Preventable cost",
+  name: "Name (A–Z)"
+};
+
+function formatMoney(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "$0";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${Math.round(n)}`;
+}
+
 function PatientRoster({
+  patients,
+  error,
   selectedPatientId,
   onSelect,
   disabled
 }: {
+  patients: RankedPatient[] | null;
+  error: string | null;
   selectedPatientId: string | null;
   onSelect: (p: RankedPatient) => void;
   disabled: boolean;
 }) {
-  const [patients, setPatients] = useState<RankedPatient[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<RosterFilter>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/roster")
-      .then((r) => {
-        if (!r.ok) throw new Error(`Roster API ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        const results = (data as { results?: RosterPatient[] }).results ?? [];
-        setPatients(results.map(rankPatient));
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortOption>("risk");
 
   const counts = useMemo(() => {
     const list = patients ?? [];
@@ -1700,17 +1723,46 @@ function PatientRoster({
 
   const visiblePatients = useMemo(() => {
     if (!patients) return null;
+
+    let list: RankedPatient[];
     switch (filter) {
       case "critical":
-        return patients.filter((p) => p.riskLevel === "CRITICAL");
+        list = patients.filter((p) => p.riskLevel === "CRITICAL");
+        break;
       case "high":
-        return patients.filter((p) => p.riskLevel === "HIGH");
+        list = patients.filter((p) => p.riskLevel === "HIGH");
+        break;
       case "noPlan":
-        return patients.filter((p) => p.has_active_careplan === 0);
+        list = patients.filter((p) => p.has_active_careplan === 0);
+        break;
       default:
-        return patients;
+        list = patients;
     }
-  }, [patients, filter]);
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter((p) => p.fullName.toLowerCase().includes(q));
+    }
+
+    const sorted = [...list];
+    switch (sortBy) {
+      case "ed":
+        sorted.sort((a, b) => b.ed_visits - a.ed_visits);
+        break;
+      case "cost":
+        sorted.sort(
+          (a, b) => b.ed_inpatient_total_cost - a.ed_inpatient_total_cost
+        );
+        break;
+      case "name":
+        sorted.sort((a, b) => a.fullName.localeCompare(b.fullName));
+        break;
+      case "risk":
+      default:
+        sorted.sort((a, b) => b.riskScore - a.riskScore);
+    }
+    return sorted;
+  }, [patients, filter, search, sortBy]);
 
   const toggleFilter = useCallback((f: Exclude<RosterFilter, null>) => {
     setFilter((prev) => (prev === f ? null : f));
@@ -1742,6 +1794,29 @@ function PatientRoster({
           3+ ED visits, ranked by predicted week-ahead risk
         </Text>
       </div>
+
+      {patients && patients.length > 0 && (
+        <div className="px-3 py-2 border-b border-kumo-line space-y-2">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search patients…"
+            className="w-full px-2.5 py-1.5 text-sm rounded-md border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent"
+          />
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortOption)}
+            className="w-full px-2 py-1.5 text-xs rounded-md border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent"
+          >
+            {(Object.keys(SORT_LABELS) as SortOption[]).map((opt) => (
+              <option key={opt} value={opt}>
+                Sort by · {SORT_LABELS[opt]}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {patients && patients.length > 0 && (
         <div className="px-3 py-2.5 border-b border-kumo-line space-y-2">
@@ -1828,6 +1903,128 @@ function PatientRoster({
   );
 }
 
+// ── Workspace header (brand + hero stats strip) ───────────────────────
+
+function HeroStat({
+  label,
+  value,
+  sublabel,
+  tone
+}: {
+  label: string;
+  value: string | number;
+  sublabel?: string;
+  tone?: "default" | "critical" | "warn" | "good";
+}) {
+  const valueClass =
+    tone === "critical"
+      ? "text-red-500"
+      : tone === "warn"
+        ? "text-orange-500"
+        : tone === "good"
+          ? "text-emerald-500"
+          : "text-kumo-default";
+  return (
+    <div className="flex flex-col gap-0.5 px-3 py-2 rounded-lg bg-kumo-base ring-1 ring-kumo-line">
+      <Text size="xs" variant="secondary">
+        {label}
+      </Text>
+      <div className={`text-xl font-bold leading-tight ${valueClass}`}>
+        {value}
+      </div>
+      {sublabel && (
+        <Text size="xs" variant="secondary">
+          {sublabel}
+        </Text>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceHeader({
+  patients,
+  loading,
+  provider
+}: {
+  patients: RankedPatient[] | null;
+  loading: boolean;
+  provider: string | null;
+}) {
+  const stats = useMemo(() => {
+    const list = patients ?? [];
+    return {
+      total: list.length,
+      critical: list.filter((p) => p.riskLevel === "CRITICAL").length,
+      noPlan: list.filter((p) => p.has_active_careplan === 0).length,
+      cost: list.reduce(
+        (sum, p) => sum + (p.ed_inpatient_total_cost || 0),
+        0
+      ),
+      edVisits: list.reduce((sum, p) => sum + p.ed_visits, 0)
+    };
+  }, [patients]);
+
+  const providerLabel =
+    provider === "openai"
+      ? "OpenAI gpt-4o-mini"
+      : provider === "anthropic"
+        ? "Anthropic Haiku"
+        : provider === "workers-ai"
+          ? "Workers AI · kimi-k2.6"
+          : null;
+
+  return (
+    <header className="border-b border-kumo-line bg-kumo-elevated">
+      <div className="px-6 pt-3 pb-2 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-2xl">🏥</span>
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold text-kumo-default leading-tight truncate">
+              Preventable ED Visit Detector
+            </h1>
+            <p className="text-xs text-kumo-subtle">
+              Care coordinator dashboard · Monday morning triage view
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {providerLabel && (
+            <Badge variant="secondary">
+              <span className="mr-1">🧠</span>
+              {providerLabel}
+            </Badge>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 px-6 pb-3">
+        <HeroStat
+          label="At-risk roster"
+          value={loading ? "…" : stats.total}
+          sublabel="3+ ED visits flagged"
+        />
+        <HeroStat
+          label="Critical risk"
+          value={loading ? "…" : stats.critical}
+          tone="critical"
+          sublabel="ER predicted within 7 days"
+        />
+        <HeroStat
+          label="Care gaps"
+          value={loading ? "…" : stats.noPlan}
+          tone="warn"
+          sublabel="no active care plan"
+        />
+        <HeroStat
+          label="Preventable cost"
+          value={loading ? "…" : formatMoney(stats.cost)}
+          tone="good"
+          sublabel={`${stats.edVisits} total ED visits`}
+        />
+      </div>
+    </header>
+  );
+}
+
 // ── Workspace (dashboard layout) ──────────────────────────────────────
 
 function Workspace() {
@@ -1836,6 +2033,42 @@ function Workspace() {
   const [chatStreaming, setChatStreaming] = useState(false);
   const [chatConnected, setChatConnected] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const [patients, setPatients] = useState<RankedPatient[] | null>(null);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [provider, setProvider] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/roster")
+      .then((r) => {
+        if (!r.ok) throw new Error(`Roster API ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const results = (data as { results?: RosterPatient[] }).results ?? [];
+        setPatients(results.map(rankPatient));
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setRosterError(String(e));
+      });
+
+    fetch("/api/provider")
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const p = (data as { provider?: string }).provider;
+        if (p) setProvider(p);
+      })
+      .catch(() => {
+        // best-effort, header just won't show provider badge
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleChatReady = useCallback(
     (handle: { send: (text: string) => void; connected: boolean; isStreaming: boolean }) => {
@@ -1857,13 +2090,22 @@ function Workspace() {
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <PatientRoster
-        selectedPatientId={selectedId}
-        onSelect={handlePatientSelect}
-        disabled={!chatReady || !chatConnected || chatStreaming}
+    <div className="flex flex-col h-screen w-screen overflow-hidden">
+      <WorkspaceHeader
+        patients={patients}
+        loading={!patients && !rosterError}
+        provider={provider}
       />
-      <Chat onReady={handleChatReady} />
+      <div className="flex flex-1 min-h-0">
+        <PatientRoster
+          patients={patients}
+          error={rosterError}
+          selectedPatientId={selectedId}
+          onSelect={handlePatientSelect}
+          disabled={!chatReady || !chatConnected || chatStreaming}
+        />
+        <Chat onReady={handleChatReady} />
+      </div>
     </div>
   );
 }
