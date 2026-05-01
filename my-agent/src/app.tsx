@@ -1,7 +1,7 @@
 import { Suspense, useCallback, useState, useEffect, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { getToolName, isToolUIPart, type UIMessage } from "ai";
+import { isToolUIPart, getToolName, type UIMessage } from "ai";
 import type { MCPServersState } from "agents";
 import type { ChatAgent } from "./server";
 import {
@@ -13,7 +13,7 @@ import {
   Switch,
   Text
 } from "@cloudflare/kumo";
-import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
+import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import {
@@ -781,7 +781,6 @@ function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const toasts = useKumoToastManager();
   const [mcpState, setMcpState] = useState<MCPServersState>({
     prompts: [],
     resources: [],
@@ -804,24 +803,7 @@ function Chat() {
     ),
     onMcpUpdate: useCallback((state: MCPServersState) => {
       setMcpState(state);
-    }, []),
-    onMessage: useCallback(
-      (message: MessageEvent) => {
-        try {
-          const data = JSON.parse(String(message.data));
-          if (data.type === "scheduled-task") {
-            toasts.add({
-              title: "Scheduled task completed",
-              description: data.description,
-              timeout: 0
-            });
-          }
-        } catch {
-          // Not JSON or not our event
-        }
-      },
-      [toasts]
-    )
+    }, [])
   });
 
   // Close MCP panel when clicking outside
@@ -871,23 +853,7 @@ function Chat() {
     addToolApprovalResponse,
     stop,
     status
-  } = useAgentChat({
-    agent,
-    onToolCall: async (event) => {
-      if (
-        "addToolOutput" in event &&
-        event.toolCall.toolName === "getUserTimezone"
-      ) {
-        event.addToolOutput({
-          toolCallId: event.toolCall.toolCallId,
-          output: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            localTime: new Date().toLocaleTimeString()
-          }
-        });
-      }
-    }
-  });
+  } = useAgentChat({ agent });
 
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -1273,10 +1239,9 @@ function Chat() {
               contents={
                 <div className="flex flex-wrap justify-center gap-2">
                   {[
-                    "What's the weather in Paris?",
-                    "What timezone am I in?",
-                    "Calculate 5000 * 3",
-                    "Remind me in 5 minutes to take a break"
+                    "Show me this week's risks",
+                    "Tell me about Lindsay Brekke",
+                    "Who needs intervention today?"
                   ].map((prompt) => (
                     <Button
                       key={prompt}
