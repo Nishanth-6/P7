@@ -1,87 +1,133 @@
 """
-Workshop — Step 3 of 3: The agentic loop
+Workshop — Step 3 of 3: Multiple tools, chained decisions
 
-Now the model can iterate: call a tool, see the results, decide what's next,
-call another tool, eventually answer.
+Now the agent has a CHOICE — it has multiple tools and has to pick the right
+one for each step. Watch it decompose the question, call tool A to find a
+patient, then call tool B to look up their conditions, then synthesize.
 
-This is the agent. Everything in agents-starter, the Cloudflare path,
-LangChain, OpenAI Assistants — they all wrap this exact pattern.
+This is the agent loop in action. Same `query()` call as step 2, but the
+agent makes 3+ decisions before answering. You can see every one.
 
-  pip install anthropic requests
-  export ANTHROPIC_API_KEY=your_key_here
+  pip install -r requirements.txt
+  claude login
   python 03_full_loop.py
 """
 
-import json
+import asyncio
+import tempfile
 import requests
-import anthropic
+from typing import Any
+
+from claude_agent_sdk import (
+    query,
+    ClaudeAgentOptions,
+    tool,
+    create_sdk_mcp_server,
+    AssistantMessage,
+    TextBlock,
+)
+
 
 D1 = "https://uic-hackathon-data.christian-7f4.workers.dev/query"
-client = anthropic.Anthropic()
+
 
 # ── PART 1 of 3: SYSTEM PROMPT ───────────────────────────────────────
 
 SYSTEM = """You are a care coordinator analyst at a value-based primary care practice.
-You help coordinators find patients at risk of avoidable ED visits.
-There are 117 synthetic patients in our database. Start with patient_summary.
+You have 117 synthetic patients in a database.
 
-Before recommending any action, summarize what you found and ask the coordinator
-to confirm before proceeding."""
+Names have numeric suffixes (Lindsay928 Brekke496) — use LIKE with LOWER() for matching.
+The patient_summary view has one row per patient with pre-computed costs and visit counts.
+The conditions table has STOP IS NULL = active.
+Active SDOH conditions are in the conditions table — search DESCRIPTION for things like
+'transport', 'housing', 'employ', 'stress', 'food', 'partner abuse'.
 
-
-# ── PART 2 of 3: TOOLS ───────────────────────────────────────────────
-
-def query_database(sql):
-    return requests.post(D1, json={"sql": sql}, timeout=10).json()
-
-
-TOOLS = [{
-    "name": "query_database",
-    "description": "Run a SQL SELECT on the patient dataset. Start with patient_summary.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"sql": {"type": "string"}},
-        "required": ["sql"]
-    }
-}]
+When investigating a patient, use the tools in sequence:
+1. list_high_cost_patients to identify candidates
+2. get_patient_conditions to understand WHY they're high-cost
+3. Then synthesize for the coordinator."""
 
 
-# ── PART 3 of 3: THE LOOP ────────────────────────────────────────────
-# Send → if tool_use, run tool, append result, loop again.
-# If end_turn, we're done.
+# ── PART 2 of 3: MULTIPLE TOOLS ──────────────────────────────────────
+# Now the agent has to PICK the right tool for each step.
 
-def run(question):
-    messages = [{"role": "user", "content": question}]
+@tool(
+    "list_high_cost_patients",
+    "Return the top N highest-cost patients ranked by ED + inpatient cost. "
+    "Use this to identify who needs investigation.",
+    {"limit": int},
+)
+async def list_high_cost_patients(args: dict[str, Any]) -> dict[str, Any]:
+    limit = args["limit"]
+    sql = (
+        "SELECT id, first, last, ed_inpatient_total_cost, ed_visits, "
+        "inpatient_visits, chronic_condition_count, has_active_careplan "
+        f"FROM patient_summary ORDER BY ed_inpatient_total_cost DESC LIMIT {limit}"
+    )
+    print(f"\n  → list_high_cost_patients(limit={limit})")
+    result = requests.post(D1, json={"sql": sql}, timeout=10).json()
+    print(f"  ← {result.get('count', 0)} patients\n")
+    return {"content": [{"type": "text", "text": str(result)}]}
 
-    while True:
-        r = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=2048,
-            system=SYSTEM,
-            tools=TOOLS,
-            messages=messages
+
+@tool(
+    "get_patient_conditions",
+    "Return all active conditions (clinical AND social/SDOH) for a specific patient ID. "
+    "Call this AFTER you've identified a patient via list_high_cost_patients.",
+    {"patient_id": str},
+)
+async def get_patient_conditions(args: dict[str, Any]) -> dict[str, Any]:
+    pid = args["patient_id"].replace("'", "''")
+    sql = (
+        "SELECT DESCRIPTION FROM conditions "
+        f"WHERE PATIENT = '{pid}' AND STOP IS NULL LIMIT 100"
+    )
+    print(f"\n  → get_patient_conditions(patient_id={args['patient_id'][:8]}...)")
+    result = requests.post(D1, json={"sql": sql}, timeout=10).json()
+    print(f"  ← {result.get('count', 0)} active conditions\n")
+    return {"content": [{"type": "text", "text": str(result)}]}
+
+
+# ── PART 3 of 3: THE LOOP (handled by the SDK) ───────────────────────
+# `query()` runs the agent loop for us: send → tool? → run → loop.
+# We just iterate over the messages it produces.
+
+async def main():
+    server = create_sdk_mcp_server(
+        name="hc",
+        version="1.0.0",
+        tools=[list_high_cost_patients, get_patient_conditions],
+    )
+
+    with tempfile.TemporaryDirectory() as cwd:
+        options = ClaudeAgentOptions(
+            system_prompt=SYSTEM,
+            cwd=cwd,
+            mcp_servers={"hc": server},
+            allowed_tools=[
+                "mcp__hc__list_high_cost_patients",
+                "mcp__hc__get_patient_conditions",
+            ],
+            disallowed_tools=[
+                "Bash", "BashOutput", "Read", "Write", "Edit", "Glob", "Grep",
+                "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
+                "KillShell", "SlashCommand",
+            ],
         )
-        messages.append({"role": "assistant", "content": r.content})
 
-        if r.stop_reason == "end_turn":
-            for block in r.content:
-                if hasattr(block, "text"):
-                    print(block.text)
-            break
-
-        # The model wants to use a tool. Run each one, send results back.
-        results = []
-        for block in r.content:
-            if block.type == "tool_use":
-                print(f"\n→ {block.name}({block.input})")
-                out = query_database(block.input["sql"])
-                print(f"  {out.get('count', 0)} rows returned\n")
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(out)
-                })
-        messages.append({"role": "user", "content": results})
+        async for message in query(
+            prompt=(
+                "Find the single highest-cost patient. "
+                "Then explain WHY they're so expensive — what conditions are driving it, "
+                "and whether any of them are social/SDOH-related. "
+                "Recommend one specific intervention."
+            ),
+            options=options,
+        ):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        print(block.text)
 
 
-run("Who are the 5 highest-cost patients? Show their name, cost, and visit counts.")
+asyncio.run(main())

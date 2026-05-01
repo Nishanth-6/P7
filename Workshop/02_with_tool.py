@@ -1,72 +1,94 @@
 """
-Workshop — Step 2 of 3: Add a tool (no loop yet)
+Workshop — Step 2 of 3: Add a tool
 
-Now the model can ASK to call a tool. We execute it. We get results.
-But there's no loop, so the model never sees the results.
+Now the model can DO something — query the live patient database.
+Watch the agent decide to call the tool, run it, see the result, then answer.
 
-Watch what happens: the model says "I'd like to query the DB."
-We run the query. We have data. The model... never gets it.
-That gap is what step 3 fixes.
+The agent is making decisions about WHAT to query and WHEN. You didn't
+hardcode the SQL — the model wrote it based on the question.
 
-  pip install anthropic requests
-  export ANTHROPIC_API_KEY=your_key_here
+  pip install -r requirements.txt
+  claude login
   python 02_with_tool.py
 """
 
+import asyncio
+import tempfile
 import requests
-import anthropic
+from typing import Any
+
+from claude_agent_sdk import (
+    query,
+    ClaudeAgentOptions,
+    tool,
+    create_sdk_mcp_server,
+    AssistantMessage,
+    TextBlock,
+    ToolUseBlock,
+)
+
 
 D1 = "https://uic-hackathon-data.christian-7f4.workers.dev/query"
-client = anthropic.Anthropic()
+
 
 # ── PART 1 of 3: SYSTEM PROMPT ───────────────────────────────────────
 
 SYSTEM = """You are a care coordinator analyst at a value-based primary care practice.
 You help coordinators find patients at risk of avoidable ED visits.
-There are 117 synthetic patients in our database. Start with patient_summary."""
+
+You have a database of 117 synthetic patients. Use the query_database tool
+to look things up. Always start with the patient_summary table — it has
+one row per patient with pre-computed costs and visit counts.
+
+Names in this dataset have numeric suffixes (Lindsay928 Brekke496) — use
+LIKE with LOWER() for fuzzy matching."""
 
 
 # ── PART 2 of 3: TOOLS ───────────────────────────────────────────────
-# Two parts per tool: what runs (Python) + what the LLM sees (schema).
-# The LLM never runs code — it reads the schema and asks us to run it.
+# A tool has two parts: WHAT runs (the Python function) and a SCHEMA
+# the model reads to know it exists. The model never runs code — it
+# asks us to run the function with specific arguments.
 
-def query_database(sql):
-    return requests.post(D1, json={"sql": sql}, timeout=10).json()
+@tool(
+    "query_database",
+    "Run a SQL SELECT against the patient dataset. Returns JSON.",
+    {"sql": str},
+)
+async def query_database(args: dict[str, Any]) -> dict[str, Any]:
+    sql = args["sql"]
+    print(f"\n  → SQL: {sql}")
+    result = requests.post(D1, json={"sql": sql}, timeout=10).json()
+    print(f"  ← {result.get('count', 0)} rows returned\n")
+    return {"content": [{"type": "text", "text": str(result)}]}
 
 
-TOOLS = [{
-    "name": "query_database",
-    "description": "Run a SQL SELECT on the patient dataset. Start with patient_summary.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"sql": {"type": "string"}},
-        "required": ["sql"]
-    }
-}]
-
-
-def ask(question):
-    response = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=2048,
-        system=SYSTEM,
-        tools=TOOLS,
-        messages=[{"role": "user", "content": question}]
+async def main():
+    db = create_sdk_mcp_server(
+        name="db", version="1.0.0", tools=[query_database]
     )
 
-    if response.stop_reason == "tool_use":
-        for block in response.content:
-            if block.type == "tool_use":
-                print(f"\n[Model wants to run: {block.name}]")
-                print(f"  SQL: {block.input['sql']}")
-                result = query_database(block.input["sql"])
-                print(f"  Got back: {result.get('count', 0)} rows\n")
-                print("⚠️  ...but the model never sees this result.")
-                print("⚠️  We have no loop, so it can't formulate a final answer.")
-    else:
-        for block in response.content:
-            if hasattr(block, "text"):
-                print(block.text)
+    # Empty cwd + disabled built-ins so the ONLY tool available is ours.
+    with tempfile.TemporaryDirectory() as cwd:
+        options = ClaudeAgentOptions(
+            system_prompt=SYSTEM,
+            cwd=cwd,
+            mcp_servers={"db": db},
+            allowed_tools=["mcp__db__query_database"],
+            disallowed_tools=[
+                "Bash", "BashOutput", "Read", "Write", "Edit", "Glob", "Grep",
+                "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
+                "KillShell", "SlashCommand",
+            ],
+        )
+
+        async for message in query(
+            prompt="Who are the 5 highest-cost patients? Show their name, cost, and visit counts.",
+            options=options,
+        ):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        print(block.text)
 
 
-ask("Who are the 5 highest-cost patients? Show their name, cost, and visit counts.")
+asyncio.run(main())
