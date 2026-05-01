@@ -14,7 +14,9 @@ README.md                    ← you are here
 Hackathon/
   prompts.md                 ← the 3 challenge prompts in full
 Workshop/
-  agent_workshop.py          ← stripped live-coding example for the workshop
+  01_chat_only.py            ← step 1: system prompt only
+  02_with_tool.py            ← step 2: + tool definition
+  03_full_loop.py            ← step 3: + agentic loop (full agent)
 docs/
   healthcare_primer.md       ← what is MedEx, VBC, ED utilization, SDOH
   data_dictionary.md         ← what's in each table, key columns, gotchas
