@@ -1,4 +1,6 @@
 import { createWorkersAI } from "workers-ai-provider";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { callable, routeAgentRequest } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
@@ -7,9 +9,71 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type LanguageModel,
   type ModelMessage
 } from "ai";
 import { z } from "zod";
+
+/**
+ * Pick the LLM provider at request time.
+ *
+ *   OPENAI_API_KEY       → OpenAI gpt-4o-mini
+ *   ANTHROPIC_API_KEY    → Anthropic claude-3-5-haiku
+ *   (neither)            → Workers AI kimi-k2.6   ← fallback / backup
+ *
+ * Switch live with:
+ *   npx wrangler secret put OPENAI_API_KEY      (use OpenAI)
+ *   npx wrangler secret delete OPENAI_API_KEY   (revert to Workers AI)
+ *
+ * MODEL_PROVIDER (optional) forces a specific provider regardless of which
+ * keys are present: set to "openai", "anthropic", or "workers".
+ */
+type ProviderEnv = {
+  AI: Env["AI"];
+  OPENAI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
+  MODEL_PROVIDER?: string;
+  OPENAI_MODEL?: string;
+  ANTHROPIC_MODEL?: string;
+};
+
+function selectModel(
+  rawEnv: Env,
+  sessionAffinity: string | undefined
+): { provider: string; model: LanguageModel } {
+  const env = rawEnv as ProviderEnv;
+  const forced = env.MODEL_PROVIDER?.toLowerCase().trim();
+
+  if (forced === "openai" || (!forced && env.OPENAI_API_KEY)) {
+    if (!env.OPENAI_API_KEY) {
+      throw new Error("MODEL_PROVIDER=openai but OPENAI_API_KEY is not set");
+    }
+    const openai = createOpenAI({ apiKey: env.OPENAI_API_KEY });
+    return {
+      provider: "openai",
+      model: openai(env.OPENAI_MODEL ?? "gpt-4o-mini")
+    };
+  }
+
+  if (forced === "anthropic" || (!forced && env.ANTHROPIC_API_KEY)) {
+    if (!env.ANTHROPIC_API_KEY) {
+      throw new Error(
+        "MODEL_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set"
+      );
+    }
+    const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    return {
+      provider: "anthropic",
+      model: anthropic(env.ANTHROPIC_MODEL ?? "claude-3-5-haiku-latest")
+    };
+  }
+
+  const workersai = createWorkersAI({ binding: env.AI });
+  return {
+    provider: "workers-ai",
+    model: workersai("@cf/moonshotai/kimi-k2.6", { sessionAffinity })
+  };
+}
 
 /**
  * The AI SDK's downloadAssets step runs `new URL(data)` on every file
@@ -66,12 +130,11 @@ export class ChatAgent extends AIChatAgent<Env> {
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const mcpTools = this.mcp.getAITools();
-    const workersai = createWorkersAI({ binding: this.env.AI });
+    const { provider, model } = selectModel(this.env, this.sessionAffinity);
+    console.log(`[chat] using model provider: ${provider}`);
 
     const result = streamText({
-      model: workersai("@cf/moonshotai/kimi-k2.6", {
-        sessionAffinity: this.sessionAffinity
-      }),
+      model,
       system: `You are the MAIN COORDINATOR for a Multi-Agent Care System.
 
 YOU HAVE ACCESS TO:
@@ -551,6 +614,20 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/roster" && request.method === "GET") {
       return fetchRoster();
+    }
+    if (url.pathname === "/api/provider" && request.method === "GET") {
+      const e = env as ProviderEnv;
+      return Response.json({
+        provider:
+          (e.MODEL_PROVIDER?.toLowerCase().trim() ||
+            (e.OPENAI_API_KEY
+              ? "openai"
+              : e.ANTHROPIC_API_KEY
+                ? "anthropic"
+                : "workers-ai")),
+        hasOpenAIKey: !!e.OPENAI_API_KEY,
+        hasAnthropicKey: !!e.ANTHROPIC_API_KEY
+      });
     }
     return (
       (await routeAgentRequest(request, env)) ||
