@@ -1560,30 +1560,41 @@ function rankPatient(p: RosterPatient): RankedPatient {
   };
 }
 
+type RosterFilter = "critical" | "high" | "noPlan" | null;
+
 function StatPill({
   label,
   count,
-  tone
+  tone,
+  active,
+  onClick
 }: {
   label: string;
   count: number;
   tone: "critical" | "high" | "warn";
+  active: boolean;
+  onClick: () => void;
 }) {
-  const toneClass =
+  const baseTone =
     tone === "critical"
-      ? "bg-red-500/15 text-red-500 ring-1 ring-red-500/30"
+      ? "bg-red-500/15 text-red-500 ring-red-500/30"
       : tone === "high"
-        ? "bg-orange-500/15 text-orange-500 ring-1 ring-orange-500/30"
-        : "bg-yellow-500/15 text-yellow-600 ring-1 ring-yellow-500/30";
+        ? "bg-orange-500/15 text-orange-500 ring-orange-500/30"
+        : "bg-yellow-500/15 text-yellow-600 ring-yellow-500/30";
+  const stateClass = active
+    ? "ring-2 shadow-sm scale-[1.02]"
+    : "ring-1 opacity-80 hover:opacity-100 hover:ring-2";
   return (
-    <div
-      className={`rounded-lg px-2 py-1.5 text-center ${toneClass}`}
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      disabled={count === 0}
+      className={`rounded-lg px-2 py-1.5 text-center transition-all disabled:opacity-40 disabled:cursor-not-allowed ${baseTone} ${stateClass}`}
     >
       <div className="text-base font-bold leading-none">{count}</div>
-      <div className="text-[10px] uppercase tracking-wide mt-0.5 opacity-80">
-        {label}
-      </div>
-    </div>
+      <div className="text-[10px] uppercase tracking-wide mt-0.5">{label}</div>
+    </button>
   );
 }
 
@@ -1656,6 +1667,7 @@ function PatientRoster({
 }) {
   const [patients, setPatients] = useState<RankedPatient[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<RosterFilter>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1686,6 +1698,30 @@ function PatientRoster({
     };
   }, [patients]);
 
+  const visiblePatients = useMemo(() => {
+    if (!patients) return null;
+    switch (filter) {
+      case "critical":
+        return patients.filter((p) => p.riskLevel === "CRITICAL");
+      case "high":
+        return patients.filter((p) => p.riskLevel === "HIGH");
+      case "noPlan":
+        return patients.filter((p) => p.has_active_careplan === 0);
+      default:
+        return patients;
+    }
+  }, [patients, filter]);
+
+  const toggleFilter = useCallback((f: Exclude<RosterFilter, null>) => {
+    setFilter((prev) => (prev === f ? null : f));
+  }, []);
+
+  const filterLabel: Record<Exclude<RosterFilter, null>, string> = {
+    critical: "Critical risk",
+    high: "High risk",
+    noPlan: "No care plan"
+  };
+
   return (
     <aside className="hidden md:flex flex-col w-80 flex-shrink-0 border-r border-kumo-line bg-kumo-base">
       <div className="px-4 py-3 border-b border-kumo-line">
@@ -1696,7 +1732,9 @@ function PatientRoster({
           </Text>
           {patients && (
             <Badge variant="secondary" className="ml-auto">
-              {patients.length}
+              {filter && visiblePatients
+                ? `${visiblePatients.length} / ${patients.length}`
+                : patients.length}
             </Badge>
           )}
         </div>
@@ -1706,10 +1744,45 @@ function PatientRoster({
       </div>
 
       {patients && patients.length > 0 && (
-        <div className="grid grid-cols-3 gap-2 px-3 py-2.5 border-b border-kumo-line">
-          <StatPill label="Critical" count={counts.critical} tone="critical" />
-          <StatPill label="High" count={counts.high} tone="high" />
-          <StatPill label="No plan" count={counts.noPlan} tone="warn" />
+        <div className="px-3 py-2.5 border-b border-kumo-line space-y-2">
+          <div className="grid grid-cols-3 gap-2">
+            <StatPill
+              label="Critical"
+              count={counts.critical}
+              tone="critical"
+              active={filter === "critical"}
+              onClick={() => toggleFilter("critical")}
+            />
+            <StatPill
+              label="High"
+              count={counts.high}
+              tone="high"
+              active={filter === "high"}
+              onClick={() => toggleFilter("high")}
+            />
+            <StatPill
+              label="No plan"
+              count={counts.noPlan}
+              tone="warn"
+              active={filter === "noPlan"}
+              onClick={() => toggleFilter("noPlan")}
+            />
+          </div>
+          {filter && (
+            <button
+              type="button"
+              onClick={() => setFilter(null)}
+              className="w-full flex items-center justify-between gap-2 px-2 py-1 rounded text-xs text-kumo-subtle hover:text-kumo-default hover:bg-kumo-elevated transition-colors"
+            >
+              <span>
+                Filter: <span className="font-semibold">{filterLabel[filter]}</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <XIcon size={10} />
+                Clear
+              </span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1728,7 +1801,14 @@ function PatientRoster({
             </Text>
           </div>
         )}
-        {patients?.map((p) => (
+        {visiblePatients?.length === 0 && filter && (
+          <div className="px-4 py-6 text-center">
+            <Text size="xs" variant="secondary">
+              No patients match this filter.
+            </Text>
+          </div>
+        )}
+        {visiblePatients?.map((p) => (
           <PatientCard
             key={p.id}
             patient={p}
