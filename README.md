@@ -19,6 +19,7 @@ docs/
   healthcare_primer.md       ← what is MedEx, VBC, ED utilization, SDOH
   data_dictionary.md         ← what's in each table, key columns, gotchas
   agent_building_guide.md    ← the agent pattern: prompt + tools + loop
+  agent_design_framework.md  ← 5 questions to answer BEFORE writing code
   cloudflare_deploy.md       ← 5-step Cloudflare Workers deploy guide
   shepherd_system_prompt.md  ← paste this into Claude Projects for a built-in teammate
 data/

@@ -109,6 +109,7 @@ Scaffold agents-starter into `agent/` inside your fork. See `docs/cloudflare_dep
 - `docs/healthcare_primer.md` — MedEx, VBC, ED utilization, SDOH explained
 - `docs/data_dictionary.md` — every table, key columns, join keys, gotchas
 - `docs/agent_building_guide.md` — the pattern, tool design, HITL, scope tips
+- `docs/agent_design_framework.md` — 5 scoping questions students should answer before writing code (where is data? where does work happen? where does human enter? where does product go? where does state persist?)
 - `Hackathon/prompts.md` — all 3 prompts in full with data guidance
 - `docs/cloudflare_deploy.md` — GitHub → Cloudflare Builds → live URL
 - `docs/shepherd_system_prompt.md` — paste into Claude Projects for a no-code fallback

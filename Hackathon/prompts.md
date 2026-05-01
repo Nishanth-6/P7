@@ -33,12 +33,17 @@ The coordinator reviews the agent's recommendation and either approves it as-is,
 | careplans | Who has an active care plan vs. gap |
 | medications | Opioids, polypharmacy, adherence signals |
 
-**Suggested agent tools**
-1. `query_patients` — filter/rank patients by clinical and social risk factors
-2. `get_patient_profile` — pull all conditions, SDOH, care plan status for a specific patient
-3. `calculate_risk_score` — synthesize clinical + social factors into a risk level
-4. `draft_outreach` — generate a coordinator-ready intervention recommendation
-5. `confirm_with_coordinator` — present the recommendation and wait for approval (human-in-the-loop)
+**Example tool decomposition (you write these — they don't exist yet)**
+
+These are illustrative examples of how to break the problem into focused tools. Names and exact behavior are up to you. The point is to show how the work decomposes:
+
+- A tool that filters/ranks patients by clinical and social risk factors
+- A tool that pulls a single patient's full profile (conditions, SDOH, care plan status)
+- A tool that scores risk based on clinical + social factors
+- A tool that drafts a coordinator-ready outreach message
+- A tool that pauses for coordinator approval before any action persists
+
+See `docs/agent_design_framework.md` for the questions to answer *before* you start writing tools.
 
 **Scope tip**
 
@@ -76,13 +81,15 @@ The conversation itself is the human-in-the-loop. The care manager steers the in
 | medications | Prescription costs, opioid patterns |
 | procedures | Procedure-level spend |
 
-**Suggested agent tools**
-1. `lookup_patient` — find patient by name or ID
-2. `get_cost_breakdown` — costs by encounter type, time range
-3. `get_claims_detail` — outstanding balances, payment history from claims_transactions
-4. `compare_to_cohort` — how does this patient compare to average?
-5. `get_conditions_and_meds` — what clinical factors are driving utilization?
-6. `generate_briefing` — produce a summary the care manager can share
+**Example tool decomposition (you write these — they don't exist yet)**
+
+- A tool that finds a patient by name or ID
+- A tool that breaks down costs by encounter type and time range
+- A tool that pulls claims detail (outstanding balances, payment history) — remember `claims_transactions` joins on `PATIENTID`, not `PATIENT`
+- A tool that compares the patient to a cohort average
+- A tool that produces a structured briefing the care manager can share
+
+See `docs/agent_design_framework.md` for the design questions to answer first.
 
 **Scope tip**
 
@@ -125,13 +132,16 @@ The coordinator reviews the plan and personalizes it with knowledge the data can
 | procedures | Missing screenings (care gaps) |
 | careplans | Active vs. no plan |
 
-**Suggested agent tools**
-1. `get_clinical_profile` — all active conditions, medications, care plan status
-2. `get_social_profile` — SDOH conditions + PRAPARE screening responses
-3. `get_financial_profile` — outstanding debt from claims_transactions
-4. `check_care_gaps` — which screenings and follow-ups are missing
-5. `generate_barrier_plan` — synthesize everything into a structured care plan
-6. `confirm_with_coordinator` — present plan, accept edits, finalize
+**Example tool decomposition (you write these — they don't exist yet)**
+
+- A tool that pulls all active conditions, medications, and care plan status
+- A tool that pulls SDOH-related conditions + PRAPARE screening responses
+- A tool that pulls outstanding debt from `claims_transactions` (join on `PATIENTID`)
+- A tool that checks for missing preventive care (screenings, med reconciliation)
+- A tool that synthesizes everything into a structured care plan
+- A tool that presents the plan to the coordinator and accepts edits
+
+See `docs/agent_design_framework.md` for the design questions to answer first.
 
 **Scope tip**
 
