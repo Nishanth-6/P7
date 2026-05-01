@@ -53,10 +53,17 @@ async def main():
         )
 
         async with ClaudeSDKClient(options=options) as client:
-            print("Step 1: System prompt only. No tools. Type 'exit' to quit.\n")
+            print("─" * 60)
+            print("STEP 1: System prompt only. No tools. No data access.")
+            print("─" * 60)
+            print("Try asking:")
+            print("  • Who are the 5 highest-cost patients?     (it can't — no tool)")
+            print("  • Tell me about value-based care.          (works — general knowledge)")
+            print("Type 'exit' to quit.\n")
+
             while True:
                 try:
-                    user_input = input("You: ").strip()
+                    user_input = input("\n💬 Your question › ").strip()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     break
@@ -64,13 +71,13 @@ async def main():
                     break
 
                 await client.query(user_input)
-                print("\nAgent: ", end="", flush=True)
+                print("\n🤖 Agent ›\n")
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
                                 print(block.text, end="", flush=True)
-                print("\n")
+                print()
 
 
 asyncio.run(main())
