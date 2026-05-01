@@ -1,11 +1,18 @@
 """
 Workshop — Step 2 of 3: Add a tool
 
-Now the model can DO something — query the live patient database.
-Watch the agent decide to call the tool, run it, see the result, then answer.
+Now the agent has a tool. Watch it decide to call query_database, write SQL,
+get rows back, and synthesize an answer.
 
-The agent is making decisions about WHAT to query and WHEN. You didn't
-hardcode the SQL — the model wrote it based on the question.
+Try asking:
+  - Who are the 5 highest-cost patients?
+  - How many patients have no active care plan?
+  - Find patients with chronic migraine.
+
+Watch the agent adapt mid-conversation when SQL fails (e.g., it'll try
+'first_name' first, get 0 rows, inspect the schema, retry with 'first').
+
+Type 'exit' or Ctrl+C to quit.
 
   pip install -r requirements.txt
   claude login
@@ -18,13 +25,12 @@ import requests
 from typing import Any
 
 from claude_agent_sdk import (
-    query,
+    ClaudeSDKClient,
     ClaudeAgentOptions,
     tool,
     create_sdk_mcp_server,
     AssistantMessage,
     TextBlock,
-    ToolUseBlock,
 )
 
 
@@ -45,9 +51,9 @@ LIKE with LOWER() for fuzzy matching."""
 
 
 # ── PART 2 of 3: TOOLS ───────────────────────────────────────────────
-# A tool has two parts: WHAT runs (the Python function) and a SCHEMA
-# the model reads to know it exists. The model never runs code — it
-# asks us to run the function with specific arguments.
+# A tool has two parts: WHAT runs (the Python function) and a SCHEMA the
+# model reads to know it exists. The model never runs code — it asks us
+# to run the function with specific arguments.
 
 @tool(
     "query_database",
@@ -67,7 +73,6 @@ async def main():
         name="db", version="1.0.0", tools=[query_database]
     )
 
-    # Empty cwd + disabled built-ins so the ONLY tool available is ours.
     with tempfile.TemporaryDirectory() as cwd:
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM,
@@ -81,14 +86,25 @@ async def main():
             ],
         )
 
-        async for message in query(
-            prompt="Who are the 5 highest-cost patients? Show their name, cost, and visit counts.",
-            options=options,
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text)
+        async with ClaudeSDKClient(options=options) as client:
+            print("Step 2: System prompt + 1 tool (query_database). Type 'exit' to quit.\n")
+            while True:
+                try:
+                    user_input = input("You: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not user_input or user_input.lower() in ("exit", "quit"):
+                    break
+
+                await client.query(user_input)
+                print("\nAgent: ", end="", flush=True)
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                print(block.text, end="", flush=True)
+                print("\n")
 
 
 asyncio.run(main())

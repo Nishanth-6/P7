@@ -1,12 +1,20 @@
 """
 Workshop — Step 3 of 3: Multiple tools, chained decisions
 
-Now the agent has a CHOICE — it has multiple tools and has to pick the right
-one for each step. Watch it decompose the question, call tool A to find a
-patient, then call tool B to look up their conditions, then synthesize.
+Now the agent has TWO tools and has to pick the right one for each step.
+Watch it decompose the question, call tool A to find a patient, then call
+tool B to look up their conditions, then synthesize.
 
-This is the agent loop in action. Same `query()` call as step 2, but the
-agent makes 3+ decisions before answering. You can see every one.
+This is the agent loop in action. The SDK runs it for you — you watch
+every decision and tool call as it happens.
+
+Try asking:
+  - Find the highest-cost patient and explain why they're expensive.
+  - Who has the most ED visits? What conditions are driving them?
+  - Find a patient with substance use issues and walk me through their case.
+  - What about Lindsay Brekke?  (follow-up — context persists across turns)
+
+Type 'exit' or Ctrl+C to quit.
 
   pip install -r requirements.txt
   claude login
@@ -19,7 +27,7 @@ import requests
 from typing import Any
 
 from claude_agent_sdk import (
-    query,
+    ClaudeSDKClient,
     ClaudeAgentOptions,
     tool,
     create_sdk_mcp_server,
@@ -89,8 +97,8 @@ async def get_patient_conditions(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── PART 3 of 3: THE LOOP (handled by the SDK) ───────────────────────
-# `query()` runs the agent loop for us: send → tool? → run → loop.
-# We just iterate over the messages it produces.
+# The SDK runs the agent loop: send → tool? → run → loop. We just watch.
+# Conversation history is preserved across turns within the SDKClient.
 
 async def main():
     server = create_sdk_mcp_server(
@@ -115,19 +123,25 @@ async def main():
             ],
         )
 
-        async for message in query(
-            prompt=(
-                "Find the single highest-cost patient. "
-                "Then explain WHY they're so expensive — what conditions are driving it, "
-                "and whether any of them are social/SDOH-related. "
-                "Recommend one specific intervention."
-            ),
-            options=options,
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text)
+        async with ClaudeSDKClient(options=options) as client:
+            print("Step 3: System prompt + 2 tools. Conversation persists. Type 'exit' to quit.\n")
+            while True:
+                try:
+                    user_input = input("You: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not user_input or user_input.lower() in ("exit", "quit"):
+                    break
+
+                await client.query(user_input)
+                print("\nAgent: ", end="", flush=True)
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                print(block.text, end="", flush=True)
+                print("\n")
 
 
 asyncio.run(main())
