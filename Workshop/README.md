@@ -15,9 +15,18 @@ this same loop with more wiring.
 ## Setup
 
 ```bash
-pip install anthropic requests
-export ANTHROPIC_API_KEY=your_key_here
+# From the repo root, create a virtual environment so installs don't pollute system Python
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install the two dependencies
+pip install -r Workshop/requirements.txt
+
+# Set your API key (Anthropic, but any provider works with code edits)
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+If you'd rather skip the venv: `pip3 install --break-system-packages -r Workshop/requirements.txt` works on Homebrew Python and is fine for a hackathon laptop.
 
 > **No API key?** Use the Cloudflare Workers path instead — Workers AI is
 > free, no key needed. See `docs/cloudflare_deploy.md`. The Python files
