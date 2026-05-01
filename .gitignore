@@ -1,0 +1,27 @@
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+dist/
+
+
+# Internal planning doc
+Complete_Handoff.md
+
+# Temp seed files
+/tmp/hackathon_seed.sql
+worker/
+data/seed.py
+hackathon.md
+NOTES.md
+PROGRESSIVE_RUBRIC_DRAFT.md

@@ -1,0 +1,16 @@
+{
+  "name": "uic-hackathon-agent",
+  "version": "1.0.0",
+  "description": "UIC Healthcare Hackathon — TypeScript agent example",
+  "scripts": {
+    "start": "ts-node agent_example.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
